@@ -334,10 +334,12 @@ struct WorkoutDetailView: View {
             Section(header: Text("Details")) {
                 HStack {
                     Image(systemName: "text.badge.checkmark")
+                        .foregroundStyle(Color(.systemGreen))
                     Text(session.name)
                 }
                 HStack {
                     Image(systemName: "calendar")
+                        .foregroundStyle(Color(.systemOrange))
                     Text(session.date, style: .date)
                 }
             }
