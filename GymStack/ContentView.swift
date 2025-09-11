@@ -323,11 +323,11 @@ struct WorkoutRow: View {
             HStack {
                 Image(systemName: "calendar")
                 Text(session.date, style: .date)
-            }.font(.subheadline).foregroundColor(.secondary)
+            }.font(.subheadline).foregroundStyle(Color(.systemOrange))
             HStack {
                 Image(systemName: "number")
                 Text("\(session.exercises.count) exercises")
-            }.font(.subheadline).foregroundColor(.secondary)
+            }.font(.subheadline).foregroundStyle(Color(.systemGreen))
         }.padding(.vertical, 8)
     }
 }
