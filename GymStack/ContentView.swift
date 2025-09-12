@@ -7,9 +7,9 @@
 
 import SwiftUI
 import SwiftData
+import Combine
 
 // MARK: - 1. Data Models
-// (These remain unchanged from the previous version)
 
 @Model
 final class WorkoutSession {
@@ -30,12 +30,15 @@ final class WorkoutSession {
 final class LoggedExercise {
     @Attribute(.unique) var id: UUID
     var name: String
+    // --- NEW FEATURE: Exercise Notes ---
+    var notes: String
     @Relationship(deleteRule: .cascade) var sets: [ExerciseSet] = []
     var session: WorkoutSession?
     
-    init(id: UUID = UUID(), name: String, sets: [ExerciseSet] = []) {
+    init(id: UUID = UUID(), name: String, notes: String = "", sets: [ExerciseSet] = []) {
         self.id = id
         self.name = name
+        self.notes = notes
         self.sets = sets
     }
 }
@@ -54,32 +57,34 @@ final class ExerciseSet: Identifiable {
     }
 }
 
-// MARK: - 3. Main View with TabBar
-// ContentView now acts as the root view containing our TabView.
+// --- NEW FEATURE: Settings Model ---
+enum WeightUnit: String, CaseIterable, Identifiable {
+    case lbs, kg
+    var id: Self { self }
+}
 
+
+// MARK: - 3. Main View with TabBar
 struct ContentView: View {
     var body: some View {
         TabView {
-            // --- First Tab: Workout History ---
             WorkoutHistoryView()
-                .tabItem {
-                    Label("History", systemImage: "list.bullet")
-                }
+                .tabItem { Label("History", systemImage: "list.bullet") }
             
-            // --- Second Tab: Workout Calendar ---
             WorkoutCalendarView()
-                .tabItem {
-                    Label("Calendar", systemImage: "calendar")
-                }
+                .tabItem { Label("Calendar", systemImage: "calendar") }
+            
+            // --- NEW FEATURE: Settings Tab ---
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gear") }
         }
-        .tint(.cyan) // Sets the accent color for the selected tab item
+        .tint(.cyan)
     }
 }
 
 
 // MARK: - 4. Tab Views
 
-// --- The original list view, now renamed to WorkoutHistoryView ---
 struct WorkoutHistoryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.date, order: .reverse) private var workoutSessions: [WorkoutSession]
@@ -92,16 +97,18 @@ struct WorkoutHistoryView: View {
                 Color(.systemGroupedBackground).edgesIgnoringSafeArea(.all)
                 
                 if workoutSessions.isEmpty {
-                    ContentUnavailableView(
-                        "No Workouts Logged",
-                        systemImage: "figure.run.circle",
-                        description: Text("Tap the '+' button to start your first workout.")
-                    )
+                    ContentUnavailableView("No Workouts Logged", systemImage: "figure.run.circle", description: Text("Tap the '+' button to start your first workout."))
                 } else {
                     List {
                         ForEach(workoutSessions) { session in
                             NavigationLink(destination: WorkoutDetailView(session: session)) {
                                 WorkoutRow(session: session)
+                            }
+                            // --- NEW FEATURE: Duplicate Workout ---
+                            .contextMenu {
+                                Button(action: { duplicate(session: session) }) {
+                                    Label("Duplicate Workout", systemImage: "plus.square.on.square")
+                                }
                             }
                         }
                         .onDelete(perform: deleteWorkouts)
@@ -114,50 +121,60 @@ struct WorkoutHistoryView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { isShowingNewWorkoutSheet = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.headline)
+                        Image(systemName: "plus.circle.fill").font(.headline)
                     }
                 }
             }
             .sheet(isPresented: $isShowingNewWorkoutSheet) {
+                // --- BUG FIX ---
+                // Explicitly inject the model context into the sheet's environment
+                // to prevent it from being lost in the presentation stack.
                 StartWorkoutView()
+                    .environment(\.modelContext, modelContext)
             }
         }
     }
     
     private func deleteWorkouts(offsets: IndexSet) {
         withAnimation {
-            for index in offsets {
-                modelContext.delete(workoutSessions[index])
+            for index in offsets { modelContext.delete(workoutSessions[index]) }
+        }
+    }
+    
+    // --- NEW FEATURE: Duplicate Workout ---
+    private func duplicate(session: WorkoutSession) {
+        let newSession = WorkoutSession(name: session.name, date: .now)
+        
+        for exercise in session.exercises {
+            let newExercise = LoggedExercise(name: exercise.name, notes: exercise.notes)
+            newSession.exercises.append(newExercise)
+            
+            for exerciseSet in exercise.sets {
+                let newSet = ExerciseSet(reps: exerciseSet.reps, weight: exerciseSet.weight)
+                newExercise.sets.append(newSet)
             }
+        }
+        
+        withAnimation {
+            modelContext.insert(newSession)
+            try? modelContext.save()
         }
     }
 }
 
-// --- NEW: The Calendar View for the second tab ---
 struct WorkoutCalendarView: View {
+    // This view remains the same as before
     @Query(sort: \WorkoutSession.date, order: .reverse) private var workoutSessions: [WorkoutSession]
     
     var body: some View {
         NavigationStack {
             CalendarView { date in
-                // This closure is called for each day in the calendar
                 VStack(spacing: 4) {
-                    Text(dayString(from: date))
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    
-                    // Find workouts for this specific day
+                    Text(dayString(from: date)).font(.headline).frame(maxWidth: .infinity, alignment: .center)
                     let workoutsForDay = workouts(for: date)
-                    
                     if !workoutsForDay.isEmpty {
                         ForEach(workoutsForDay) { session in
-                            Text(session.name)
-                                .font(.caption2)
-                                .lineLimit(1)
-                                .padding(4)
-                                .background(Color.cyan.opacity(0.2))
-                                .cornerRadius(4)
+                            Text(session.name).font(.caption2).lineLimit(1).padding(4).background(Color.cyan.opacity(0.2)).cornerRadius(4)
                         }
                     }
                     Spacer()
@@ -168,151 +185,50 @@ struct WorkoutCalendarView: View {
         }
     }
     
-    // Helper function to get the day number as a string
-    private func dayString(from date: Date) -> String {
-        let calendar = Calendar.current
-        return String(calendar.component(.day, from: date))
-    }
+    private func dayString(from date: Date) -> String { Calendar.current.component(.day, from: date).formatted() }
+    private func workouts(for date: Date) -> [WorkoutSession] { workoutSessions.filter { Calendar.current.isDate($0.date, inSameDayAs: date) } }
+}
+
+// --- NEW FEATURE: Settings View ---
+struct SettingsView: View {
+    @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+    @AppStorage("restDuration") private var restDuration: Int = 90
     
-    // Helper function to filter workouts for a specific date
-    private func workouts(for date: Date) -> [WorkoutSession] {
-        workoutSessions.filter { session in
-            Calendar.current.isDate(session.date, inSameDayAs: date)
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Workout Settings")) {
+                    Picker("Weight Units", selection: $weightUnit) {
+                        ForEach(WeightUnit.allCases) { unit in
+                            Text(unit.rawValue.uppercased()).tag(unit)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Stepper("Rest Timer: \(restDuration) seconds", value: $restDuration, in: 30...300, step: 15)
+                }
+            }
+            .navigationTitle("Settings")
         }
     }
 }
 
 
 // MARK: - 5. Supporting Views
-// (These are the same views as before, no changes needed)
 
-// A minimal, self-contained calendar grid view that renders the current month
-// and invokes a content closure for each day. This is not locale-perfect but
-// is sufficient for showing daily workout badges.
+// CalendarView remains the same as before
 struct CalendarView<DayContent: View>: View {
     let dayContent: (Date) -> DayContent
-
-    @State private var monthOffset: Int = 0 // 0 = current month
-
-    init(@ViewBuilder dayContent: @escaping (Date) -> DayContent) {
-        self.dayContent = dayContent
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            header
-            weekdayHeader
-            monthGrid
-        }
-        .padding()
-    }
-
-    private var header: some View {
-        HStack {
-            Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }
-            Spacer()
-            Text(monthTitle(for: displayedMonth))
-                .font(.headline)
-            Spacer()
-            Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") }
-        }
-    }
-
-    private var weekdayHeader: some View {
-        let symbols = Calendar.current.shortWeekdaySymbols // Sun, Mon, ... (depends on locale)
-        return HStack {
-            ForEach(symbols, id: \.self) { symbol in
-                Text(symbol)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-    }
-
-    private var monthGrid: some View {
-        let dates = datesForMonth(displayedMonth)
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
-            ForEach(dates, id: \.self) { date in
-                if Calendar.current.isDate(date, equalTo: displayedMonth, toGranularity: .month) {
-                    dayContent(date)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(.secondarySystemBackground))
-                        )
-                } else {
-                    // Placeholder for preceding/following month days
-                    Text("")
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-            }
-        }
-    }
-
-    // MARK: - Date helpers
-
-    private var displayedMonth: Date {
-        let calendar = Calendar.current
-        let now = Date()
-        return calendar.date(byAdding: .month, value: monthOffset, to: startOfMonth(for: now)) ?? now
-    }
-
-    private func monthTitle(for date: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "LLLL yyyy" // e.g., September 2025
-        return fmt.string(from: date)
-    }
-
-    private func startOfMonth(for date: Date) -> Date {
-        let calendar = Calendar.current
-        let comps = calendar.dateComponents([.year, .month], from: date)
-        return calendar.date(from: comps) ?? date
-    }
-
-    private func datesForMonth(_ month: Date) -> [Date] {
-        let calendar = Calendar.current
-        let start = startOfMonth(for: month)
-        guard let range = calendar.range(of: .day, in: .month, for: start) else { return [] }
-
-        // Determine the weekday offset for the first day (so grid starts on the locale's firstWeekday)
-        let firstWeekdayIndex = calendar.component(.weekday, from: start) // 1..7 where 1 = Sunday (locale dependent)
-        let leadingEmpty = (firstWeekdayIndex - calendar.firstWeekday + 7) % 7
-
-        // Build array with leading placeholders from previous month, then actual days, then trailing placeholders
-        var dates: [Date] = []
-
-        // Leading placeholders (previous month days, but we render them empty)
-        if leadingEmpty > 0 {
-            for i in stride(from: leadingEmpty, to: 0, by: -1) {
-                if let d = calendar.date(byAdding: .day, value: -i, to: start) {
-                    dates.append(d)
-                }
-            }
-        }
-
-        // Actual month days
-        for day in range {
-            if let d = calendar.date(byAdding: .day, value: day - 1, to: start) {
-                dates.append(d)
-            }
-        }
-
-        // Trailing placeholders to complete the final week row to 7 columns
-        let remainder = dates.count % 7
-        if remainder != 0 {
-            let needed = 7 - remainder
-            if let last = dates.last {
-                for i in 1...needed {
-                    if let d = calendar.date(byAdding: .day, value: i, to: last) {
-                        dates.append(d)
-                    }
-                }
-            }
-        }
-
-        return dates
-    }
+    @State private var monthOffset: Int = 0
+    init(@ViewBuilder dayContent: @escaping (Date) -> DayContent) { self.dayContent = dayContent }
+    private var displayedMonth: Date { Calendar.current.date(byAdding: .month, value: monthOffset, to: startOfMonth(for: .now)) ?? .now }
+    var body: some View { VStack(spacing: 8) { header; weekdayHeader; monthGrid }.padding() }
+    private var header: some View { HStack { Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }; Spacer(); Text(monthTitle(for: displayedMonth)).font(.headline); Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") } } }
+    private var weekdayHeader: some View { let symbols = Calendar.current.shortWeekdaySymbols; return HStack { ForEach(symbols, id: \.self) { symbol in Text(symbol).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity) } } }
+    private var monthGrid: some View { let dates = datesForMonth(displayedMonth); return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) { ForEach(dates, id: \.self) { date in if Calendar.current.isDate(date, equalTo: displayedMonth, toGranularity: .month) { dayContent(date).frame(maxWidth: .infinity, minHeight: 44).background(RoundedRectangle(cornerRadius: 6).fill(Color(.secondarySystemBackground))) } else { Text("").frame(maxWidth: .infinity, minHeight: 44) } } } }
+    private func monthTitle(for date: Date) -> String { date.formatted(.dateTime.year().month(.wide)) }
+    private func startOfMonth(for date: Date) -> Date { let comps = Calendar.current.dateComponents([.year, .month], from: date); return Calendar.current.date(from: comps) ?? date }
+    private func datesForMonth(_ month: Date) -> [Date] { let cal = Calendar.current; let start = startOfMonth(for: month); guard let range = cal.range(of: .day, in: .month, for: start) else { return [] }; let firstWeekdayIndex = cal.component(.weekday, from: start); let leadingEmpty = (firstWeekdayIndex - cal.firstWeekday + 7) % 7; var dates: [Date] = []; if leadingEmpty > 0 { for i in stride(from: leadingEmpty, to: 0, by: -1) { if let d = cal.date(byAdding: .day, value: -i, to: start) { dates.append(d) } } }; for day in range { if let d = cal.date(byAdding: .day, value: day - 1, to: start) { dates.append(d) } }; let remainder = dates.count % 7; if remainder != 0 { let needed = 7 - remainder; if let last = dates.last { for i in 1...needed { if let d = cal.date(byAdding: .day, value: i, to: last) { dates.append(d) } } } }; return dates }
 }
 
 struct WorkoutRow: View {
@@ -320,14 +236,8 @@ struct WorkoutRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(session.name).font(.headline).foregroundColor(.primary)
-            HStack {
-                Image(systemName: "calendar")
-                Text(session.date, style: .date)
-            }.font(.subheadline).foregroundStyle(Color(.systemOrange))
-            HStack {
-                Image(systemName: "number")
-                Text("\(session.exercises.count) exercises")
-            }.font(.subheadline).foregroundStyle(Color(.systemGreen))
+            HStack { Image(systemName: "calendar"); Text(session.date, style: .date) }.font(.subheadline).foregroundStyle(Color(.systemOrange))
+            HStack { Image(systemName: "number"); Text("\(session.exercises.count) exercises") }.font(.subheadline).foregroundStyle(Color(.systemGreen))
         }.padding(.vertical, 8)
     }
 }
@@ -341,9 +251,7 @@ struct StartWorkoutView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("Workout Details")) {
-                    TextField("Workout Name (e.g., Push Day)", text: $workoutName)
-                }
+                Section(header: Text("Workout Details")) { TextField("Workout Name (e.g., Push Day)", text: $workoutName) }
             }
             .navigationTitle("New Workout")
             .navigationBarTitleDisplayMode(.inline)
@@ -352,10 +260,7 @@ struct StartWorkoutView: View {
                 ToolbarItem(placement: .primaryAction) { Button("Start", action: startWorkout).disabled(workoutName.isEmpty) }
             }
             .navigationDestination(item: $newWorkoutSession) { session in
-                 ActiveWorkoutView(session: session, onFinish: {
-                    newWorkoutSession = nil
-                    dismiss()
-                 })
+                 ActiveWorkoutView(session: session, onFinish: { newWorkoutSession = nil; dismiss() })
             }
         }
     }
@@ -374,61 +279,142 @@ struct ActiveWorkoutView: View {
     var onFinish: () -> Void
     @State private var isShowingAddExerciseSheet = false
     
+    // --- NEW FEATURE: Rest Timer ---
+    @State private var isTimerActive = false
+    @State private var timerKey = UUID() // Used to reset the timer view
+    @AppStorage("restDuration") private var restDuration: Int = 90
+    
     var body: some View {
-        VStack {
-            List {
-                ForEach(session.exercises) { exercise in
-                    Section(header: Text(exercise.name).font(.headline)) {
-                        ForEach(exercise.sets.indices, id: \.self) { index in
-                             SetRowView(set: exercise.sets[index], setNumber: index + 1)
+        ZStack(alignment: .bottom) {
+            VStack {
+                if session.exercises.isEmpty {
+                     ContentUnavailableView("Empty Workout", systemImage: "figure.strengthtraining.traditional", description: Text("Tap 'Add Exercise' to log your first exercise."))
+                } else {
+                    List {
+                        ForEach(session.exercises) { exercise in
+                            ExerciseSectionView(exercise: exercise, onAddSet: startTimer)
                         }
+                        .onDelete(perform: deleteExercise)
                     }
+                    .listStyle(.insetGrouped)
                 }
-                .onDelete(perform: deleteExercise)
+                
+                VStack(spacing: 12) {
+                    Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).tint(.cyan)
+                    Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.bordered).controlSize(.large)
+                }.padding()
             }
-            .listStyle(.insetGrouped)
-            VStack(spacing: 12) {
-                Button(action: { isShowingAddExerciseSheet = true }) {
-                    Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).controlSize(.large).tint(.cyan)
-                Button(action: finishWorkout) {
-                    Text("Finish Workout").font(.headline).frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).controlSize(.large)
-            }.padding()
+            
+            // --- NEW FEATURE: Rest Timer ---
+            if isTimerActive {
+                RestTimerView(duration: restDuration, onFinish: { isTimerActive = false })
+                    .id(timerKey) // This makes SwiftUI recreate the view when the key changes
+                    .padding()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .navigationTitle(session.name)
         .navigationBarBackButtonHidden(true)
-        .sheet(isPresented: $isShowingAddExerciseSheet) { AddExerciseView(session: session) }
+        .sheet(isPresented: $isShowingAddExerciseSheet) {
+            // --- BUG FIX #2 ---
+            // The AddExerciseView also needs the context injected because it uses a @Query
+            // for the autocomplete feature.
+            AddExerciseView(session: session)
+                .environment(\.modelContext, modelContext)
+        }
+    }
+    
+    // --- NEW FEATURE: Rest Timer ---
+    private func startTimer() {
+        withAnimation { isTimerActive = true }
+        timerKey = UUID() // Change key to reset the timer
     }
     
     private func finishWorkout() {
+        try? modelContext.save()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         onFinish()
     }
 
     private func deleteExercise(at offsets: IndexSet) {
         session.exercises.remove(atOffsets: offsets)
+        try? modelContext.save()
+    }
+}
+
+// --- NEW FEATURE: Broke Exercise Section into its own view for clarity ---
+struct ExerciseSectionView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Bindable var exercise: LoggedExercise
+    var onAddSet: () -> Void
+    @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+    
+    var body: some View {
+        Section {
+            ForEach(exercise.sets.indices, id: \.self) { index in
+                 SetRowView(set: exercise.sets[index], setNumber: index + 1, unit: weightUnit.rawValue)
+            }
+            .onDelete { indices in
+                exercise.sets.remove(atOffsets: indices)
+                try? modelContext.save()
+            }
+            
+            Button("Add Set", systemImage: "plus") {
+                let lastSet = exercise.sets.last ?? ExerciseSet(reps: 8, weight: 100)
+                let newSet = ExerciseSet(reps: lastSet.reps, weight: lastSet.weight)
+                exercise.sets.append(newSet)
+                try? modelContext.save()
+                onAddSet() // Triggers the timer
+            }
+        } header: {
+            Text(exercise.name).font(.headline)
+        }
     }
 }
 
 struct AddExerciseView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @Bindable var session: WorkoutSession
+    
     @State private var exerciseName = ""
     @State private var sets: [ExerciseSet] = [ExerciseSet(reps: 8, weight: 100.0)]
+    
+    // --- NEW FEATURE: Autocomplete ---
+    @Query(sort: \LoggedExercise.name) private var allExercises: [LoggedExercise]
+    private var uniqueExerciseNames: [String] {
+        Array(Set(allExercises.map { $0.name })).sorted()
+    }
+    private var filteredNames: [String] {
+        guard !exerciseName.isEmpty else { return [] }
+        return uniqueExerciseNames.filter { $0.lowercased().contains(exerciseName.lowercased()) }
+    }
+    
+    @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
     
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("Exercise Name")) { TextField("e.g., Barbell Bench Press", text: $exerciseName) }
+                Section(header: Text("Exercise Name")) {
+                    TextField("e.g., Barbell Bench Press", text: $exerciseName)
+                    // --- NEW FEATURE: Autocomplete Suggestions ---
+                    if !filteredNames.isEmpty {
+                        ForEach(filteredNames.prefix(3), id: \.self) { name in
+                            Button(name) {
+                                exerciseName = name
+                            }
+                        }
+                    }
+                }
+                
                 Section(header: Text("Sets")) {
                     ForEach($sets) { $set in
                         HStack(spacing: 15) {
-                            Text("Reps:")
+                            Text("Reps:").frame(width: 45)
                             TextField("Reps", value: $set.reps, formatter: NumberFormatter()).keyboardType(.numberPad)
-                            Text("Weight:")
+                            Text("Weight:").frame(width: 55)
                             TextField("Weight", value: $set.weight, formatter: NumberFormatter()).keyboardType(.decimalPad)
-                            Text("lbs")
+                            Text(weightUnit.rawValue)
                         }
                     }.onDelete { indices in sets.remove(atOffsets: indices) }
                     Button("Add Set", systemImage: "plus") { sets.append(ExerciseSet(reps: 8, weight: 100.0)) }
@@ -446,12 +432,21 @@ struct AddExerciseView: View {
     private func saveExercise() {
         let newExercise = LoggedExercise(name: exerciseName, sets: sets)
         session.exercises.append(newExercise)
+        try? modelContext.save()
         dismiss()
     }
 }
 
 struct WorkoutDetailView: View {
-    let session: WorkoutSession
+    @Bindable var session: WorkoutSession
+    @State private var isEditingSession = false
+    
+    // --- NEW FEATURE: Editing State ---
+    @State private var editingExercise: LoggedExercise?
+    @State private var editingSet: ExerciseSet?
+    
+    @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+
     var body: some View {
         List {
             Section(header: Text("Details")) {
@@ -460,26 +455,50 @@ struct WorkoutDetailView: View {
             }
             Section(header: Text("Exercises")) {
                 if session.exercises.isEmpty {
-                    Text("No exercises were logged for this session.").foregroundColor(.secondary)
+                    Text("No exercises were logged.").foregroundColor(.secondary)
                 } else {
                     ForEach(session.exercises) { exercise in
                         DisclosureGroup(exercise.name) {
-                            VStack(alignment: .leading) {
-                                ForEach(exercise.sets.indices, id: \.self) { index in
-                                    SetRowView(set: exercise.sets[index], setNumber: index + 1).padding(.vertical, 4)
+                            VStack(alignment: .leading, spacing: 10) {
+                                // --- NEW FEATURE: Exercise Notes ---
+                                if !exercise.notes.isEmpty {
+                                    Text(exercise.notes).font(.caption).foregroundStyle(.secondary).padding(.bottom, 5)
+                                }
+                                ForEach(exercise.sets) { set in
+                                    SetRowView(set: set, setNumber: (exercise.sets.firstIndex(of: set) ?? 0) + 1, unit: weightUnit.rawValue)
+                                        // --- NEW FEATURE: Edit Set ---
+                                        .onTapGesture { editingSet = set }
                                 }
                             }
-                        }.font(.headline)
+                        }
+                        .font(.headline)
+                        // --- NEW FEATURE: Edit Exercise ---
+                        .contextMenu {
+                            Button("Edit Exercise", systemImage: "pencil") {
+                                editingExercise = exercise
+                            }
+                        }
                     }
                 }
             }
-        }.navigationTitle("Workout Summary")
+        }
+        .navigationTitle("Workout Summary")
+        .toolbar {
+            // --- NEW FEATURE: Edit Session ---
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Edit") { isEditingSession = true }
+            }
+        }
+        .sheet(isPresented: $isEditingSession) { EditSessionView(session: session) }
+        .sheet(item: $editingExercise) { exercise in EditExerciseView(exercise: exercise) }
+        .sheet(item: $editingSet) { set in EditSetView(set: set) }
     }
 }
 
 struct SetRowView: View {
     let set: ExerciseSet
     let setNumber: Int
+    let unit: String
     var body: some View {
         HStack {
             Text("Set \(setNumber)").fontWeight(.medium).frame(width: 60, alignment: .leading)
@@ -488,14 +507,129 @@ struct SetRowView: View {
             Text("reps").foregroundColor(.secondary)
             Spacer()
             Text(String(format: "%.1f", set.weight)).frame(width: 60)
-            Text("lbs").foregroundColor(.secondary)
+            Text(unit).foregroundColor(.secondary)
         }.font(.body)
     }
 }
 
-// MARK: - Previews
+// --- NEW FEATURE: Edit Session View ---
+struct EditSessionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var session: WorkoutSession
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Workout Name") { TextField("Name", text: $session.name) }
+                Section("Workout Date") { DatePicker("Date", selection: $session.date, displayedComponents: .date) }
+            }
+            .navigationTitle("Edit Workout")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
 
+// --- NEW FEATURE: Edit Exercise View ---
+struct EditExerciseView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var exercise: LoggedExercise
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Exercise Name") { TextField("Name", text: $exercise.name) }
+                Section("Notes") { TextField("Notes (e.g. 'Felt strong')", text: $exercise.notes, axis: .vertical) }
+            }
+            .navigationTitle("Edit Exercise")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+// --- NEW FEATURE: Edit Set View ---
+struct EditSetView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var set: ExerciseSet
+    @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                HStack {
+                    Text("Reps:")
+                    TextField("Reps", value: $set.reps, formatter: NumberFormatter()).keyboardType(.numberPad)
+                }
+                HStack {
+                    Text("Weight (\(weightUnit.rawValue)):")
+                    TextField("Weight", value: $set.weight, formatter: NumberFormatter()).keyboardType(.decimalPad)
+                }
+            }
+            .navigationTitle("Edit Set")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+// --- NEW FEATURE: Rest Timer View ---
+struct RestTimerView: View {
+    let duration: Int
+    var onFinish: () -> Void
+    
+    @State private var remainingTime: Int
+    @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    
+    init(duration: Int, onFinish: @escaping () -> Void) {
+        self.duration = duration
+        self._remainingTime = State(initialValue: duration)
+        self.onFinish = onFinish
+    }
+    
+    var body: some View {
+        HStack {
+            Image(systemName: "timer")
+                .font(.headline)
+            Text("Rest: \(remainingTime)s")
+                .font(.headline.monospacedDigit())
+            
+            ProgressView(value: Double(remainingTime), total: Double(duration))
+                .progressViewStyle(.linear)
+                .tint(.cyan)
+
+            Button(action: onFinish) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .onReceive(timer) { _ in
+            if remainingTime > 0 {
+                remainingTime -= 1
+            } else {
+                timer.upstream.connect().cancel()
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                onFinish()
+            }
+        }
+        .onDisappear {
+            timer.upstream.connect().cancel()
+        }
+    }
+}
+
+
+// MARK: - Previews
 #Preview {
     ContentView()
-        .modelContainer(for: WorkoutSession.self, inMemory: true)
+        .modelContainer(for: [WorkoutSession.self, LoggedExercise.self, ExerciseSet.self], inMemory: true)
 }
+
