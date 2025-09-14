@@ -30,7 +30,6 @@ final class WorkoutSession {
 final class LoggedExercise {
     @Attribute(.unique) var id: UUID
     var name: String
-    // --- NEW FEATURE: Exercise Notes ---
     var notes: String
     @Relationship(deleteRule: .cascade) var sets: [ExerciseSet] = []
     var session: WorkoutSession?
@@ -57,7 +56,6 @@ final class ExerciseSet: Identifiable {
     }
 }
 
-// --- NEW FEATURE: Settings Model ---
 enum WeightUnit: String, CaseIterable, Identifiable {
     case lbs, kg
     var id: Self { self }
@@ -74,7 +72,6 @@ struct ContentView: View {
             WorkoutCalendarView()
                 .tabItem { Label("Calendar", systemImage: "calendar") }
             
-            // --- NEW FEATURE: Settings Tab ---
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
@@ -104,7 +101,6 @@ struct WorkoutHistoryView: View {
                             NavigationLink(destination: WorkoutDetailView(session: session)) {
                                 WorkoutRow(session: session)
                             }
-                            // --- NEW FEATURE: Duplicate Workout ---
                             .contextMenu {
                                 Button(action: { duplicate(session: session) }) {
                                     Label("Duplicate Workout", systemImage: "plus.square.on.square")
@@ -126,9 +122,6 @@ struct WorkoutHistoryView: View {
                 }
             }
             .sheet(isPresented: $isShowingNewWorkoutSheet) {
-                // --- BUG FIX ---
-                // Explicitly inject the model context into the sheet's environment
-                // to prevent it from being lost in the presentation stack.
                 StartWorkoutView()
                     .environment(\.modelContext, modelContext)
             }
@@ -141,7 +134,6 @@ struct WorkoutHistoryView: View {
         }
     }
     
-    // --- NEW FEATURE: Duplicate Workout ---
     private func duplicate(session: WorkoutSession) {
         let newSession = WorkoutSession(name: session.name, date: .now)
         
@@ -163,7 +155,6 @@ struct WorkoutHistoryView: View {
 }
 
 struct WorkoutCalendarView: View {
-    // This view remains the same as before
     @Query(sort: \WorkoutSession.date, order: .reverse) private var workoutSessions: [WorkoutSession]
     
     var body: some View {
@@ -189,7 +180,6 @@ struct WorkoutCalendarView: View {
     private func workouts(for date: Date) -> [WorkoutSession] { workoutSessions.filter { Calendar.current.isDate($0.date, inSameDayAs: date) } }
 }
 
-// --- NEW FEATURE: Settings View ---
 struct SettingsView: View {
     @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
     @AppStorage("restDuration") private var restDuration: Int = 90
@@ -216,7 +206,6 @@ struct SettingsView: View {
 
 // MARK: - 5. Supporting Views
 
-// CalendarView remains the same as before
 struct CalendarView<DayContent: View>: View {
     let dayContent: (Date) -> DayContent
     @State private var monthOffset: Int = 0
@@ -279,9 +268,8 @@ struct ActiveWorkoutView: View {
     var onFinish: () -> Void
     @State private var isShowingAddExerciseSheet = false
     
-    // --- NEW FEATURE: Rest Timer ---
     @State private var isTimerActive = false
-    @State private var timerKey = UUID() // Used to reset the timer view
+    @State private var timerKey = UUID()
     @AppStorage("restDuration") private var restDuration: Int = 90
     
     var body: some View {
@@ -305,10 +293,9 @@ struct ActiveWorkoutView: View {
                 }.padding()
             }
             
-            // --- NEW FEATURE: Rest Timer ---
             if isTimerActive {
                 RestTimerView(duration: restDuration, onFinish: { isTimerActive = false })
-                    .id(timerKey) // This makes SwiftUI recreate the view when the key changes
+                    .id(timerKey)
                     .padding()
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -316,18 +303,14 @@ struct ActiveWorkoutView: View {
         .navigationTitle(session.name)
         .navigationBarBackButtonHidden(true)
         .sheet(isPresented: $isShowingAddExerciseSheet) {
-            // --- BUG FIX #2 ---
-            // The AddExerciseView also needs the context injected because it uses a @Query
-            // for the autocomplete feature.
             AddExerciseView(session: session)
                 .environment(\.modelContext, modelContext)
         }
     }
     
-    // --- NEW FEATURE: Rest Timer ---
     private func startTimer() {
         withAnimation { isTimerActive = true }
-        timerKey = UUID() // Change key to reset the timer
+        timerKey = UUID()
     }
     
     private func finishWorkout() {
@@ -342,7 +325,6 @@ struct ActiveWorkoutView: View {
     }
 }
 
-// --- NEW FEATURE: Broke Exercise Section into its own view for clarity ---
 struct ExerciseSectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Bindable var exercise: LoggedExercise
@@ -364,7 +346,7 @@ struct ExerciseSectionView: View {
                 let newSet = ExerciseSet(reps: lastSet.reps, weight: lastSet.weight)
                 exercise.sets.append(newSet)
                 try? modelContext.save()
-                onAddSet() // Triggers the timer
+                onAddSet()
             }
         } header: {
             Text(exercise.name).font(.headline)
@@ -378,9 +360,10 @@ struct AddExerciseView: View {
     @Bindable var session: WorkoutSession
     
     @State private var exerciseName = ""
+    // --- FIX: Add state for exercise notes ---
+    @State private var exerciseNotes = ""
     @State private var sets: [ExerciseSet] = [ExerciseSet(reps: 8, weight: 100.0)]
     
-    // --- NEW FEATURE: Autocomplete ---
     @Query(sort: \LoggedExercise.name) private var allExercises: [LoggedExercise]
     private var uniqueExerciseNames: [String] {
         Array(Set(allExercises.map { $0.name })).sorted()
@@ -397,7 +380,6 @@ struct AddExerciseView: View {
             Form {
                 Section(header: Text("Exercise Name")) {
                     TextField("e.g., Barbell Bench Press", text: $exerciseName)
-                    // --- NEW FEATURE: Autocomplete Suggestions ---
                     if !filteredNames.isEmpty {
                         ForEach(filteredNames.prefix(3), id: \.self) { name in
                             Button(name) {
@@ -405,6 +387,12 @@ struct AddExerciseView: View {
                             }
                         }
                     }
+                }
+                
+                // --- FIX: Add section for notes input ---
+                Section(header: Text("Notes (Optional)")) {
+                    TextField("e.g., focus on form, go slow", text: $exerciseNotes, axis: .vertical)
+                        .lineLimit(3...)
                 }
                 
                 Section(header: Text("Sets")) {
@@ -430,7 +418,8 @@ struct AddExerciseView: View {
     }
     
     private func saveExercise() {
-        let newExercise = LoggedExercise(name: exerciseName, sets: sets)
+        // --- FIX: Pass notes into the initializer ---
+        let newExercise = LoggedExercise(name: exerciseName, notes: exerciseNotes, sets: sets)
         session.exercises.append(newExercise)
         try? modelContext.save()
         dismiss()
@@ -441,7 +430,6 @@ struct WorkoutDetailView: View {
     @Bindable var session: WorkoutSession
     @State private var isEditingSession = false
     
-    // --- NEW FEATURE: Editing State ---
     @State private var editingExercise: LoggedExercise?
     @State private var editingSet: ExerciseSet?
     
@@ -460,19 +448,16 @@ struct WorkoutDetailView: View {
                     ForEach(session.exercises) { exercise in
                         DisclosureGroup(exercise.name) {
                             VStack(alignment: .leading, spacing: 10) {
-                                // --- NEW FEATURE: Exercise Notes ---
                                 if !exercise.notes.isEmpty {
                                     Text(exercise.notes).font(.caption).foregroundStyle(.secondary).padding(.bottom, 5)
                                 }
                                 ForEach(exercise.sets) { set in
                                     SetRowView(set: set, setNumber: (exercise.sets.firstIndex(of: set) ?? 0) + 1, unit: weightUnit.rawValue)
-                                        // --- NEW FEATURE: Edit Set ---
                                         .onTapGesture { editingSet = set }
                                 }
                             }
                         }
                         .font(.headline)
-                        // --- NEW FEATURE: Edit Exercise ---
                         .contextMenu {
                             Button("Edit Exercise", systemImage: "pencil") {
                                 editingExercise = exercise
@@ -484,7 +469,6 @@ struct WorkoutDetailView: View {
         }
         .navigationTitle("Workout Summary")
         .toolbar {
-            // --- NEW FEATURE: Edit Session ---
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Edit") { isEditingSession = true }
             }
@@ -512,7 +496,6 @@ struct SetRowView: View {
     }
 }
 
-// --- NEW FEATURE: Edit Session View ---
 struct EditSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var session: WorkoutSession
@@ -532,7 +515,6 @@ struct EditSessionView: View {
     }
 }
 
-// --- NEW FEATURE: Edit Exercise View ---
 struct EditExerciseView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var exercise: LoggedExercise
@@ -552,7 +534,6 @@ struct EditExerciseView: View {
     }
 }
 
-// --- NEW FEATURE: Edit Set View ---
 struct EditSetView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var set: ExerciseSet
@@ -579,7 +560,6 @@ struct EditSetView: View {
     }
 }
 
-// --- NEW FEATURE: Rest Timer View ---
 struct RestTimerView: View {
     let duration: Int
     var onFinish: () -> Void
