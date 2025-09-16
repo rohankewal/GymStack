@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import Combine
 import UserNotifications
+import AudioToolbox
 
 // MARK: - 1. Data Models
 
@@ -64,29 +65,82 @@ enum WeightUnit: String, CaseIterable, Identifiable {
 
 // --- TIMER REPLACEMENT: Notification Manager ---
 // This class handles asking for permission and scheduling the rest timer notifications.
-class NotificationManager {
+class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager() // Singleton for easy access
-    private init() {}
 
-    func requestAuthorization() {
+    private override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+    }
+
+    // Call this early in app lifecycle to prompt for permission
+    func configure() {
+        requestAuthorization()
+    }
+
+    private func requestAuthorization() {
         let options: UNAuthorizationOptions = [.alert, .sound, .badge]
-        UNUserNotificationCenter.current().requestAuthorization(options: options) { (success, error) in
+        UNUserNotificationCenter.current().requestAuthorization(options: options) { (granted, error) in
             if let error = error {
                 print("Error requesting notification authorization: \(error.localizedDescription)")
+            } else {
+                print("Notification permission granted: \(granted)")
             }
         }
     }
 
     func scheduleRestNotification(duration: Int) {
+        let duration = max(1, duration)
         let content = UNMutableNotificationContent()
         content.title = "Rest Over!"
         content.body = "Time for your next set."
         content.sound = .default
+        if #available(iOS 15.0, *) {
+            content.interruptionLevel = .timeSensitive
+        }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(duration), repeats: false)
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
 
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Failed to schedule rest notification: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // Public entry point used by UI when a new set is added
+    func startRestTimer(duration: Int) {
+        let duration = max(1, duration)
+        // Schedule local notification
+        scheduleRestNotification(duration: duration)
+        // Also start a foreground fallback haptic + sound so the user gets feedback even if notifications are suppressed
+        startFallbackHapticTimer(duration: duration)
+    }
+
+    private func startFallbackHapticTimer(duration: Int) {
+        let deadline = DispatchTime.now() + .seconds(duration)
+        DispatchQueue.main.asyncAfter(deadline: deadline) {
+            // Light haptic
+            let generator = UIImpactFeedbackGenerator(style: .light)
+            generator.prepare()
+            generator.impactOccurred()
+            // Play a short system sound as an audible cue
+            AudioServicesPlaySystemSound(1007)
+        }
+    }
+
+    // Foreground presentation: show alert/sound and provide a light haptic buzz
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // Light haptic when the rest ends while app is in foreground
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
+        generator.impactOccurred()
+
+        // Present banner/sound in foreground as well
+        completionHandler([.banner, .sound])
     }
 }
 
@@ -105,6 +159,10 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
         .tint(.cyan)
+        .onAppear {
+            // Ask for notification permission early
+            NotificationManager.shared.configure()
+        }
     }
 }
 
@@ -359,8 +417,8 @@ struct ExerciseSectionView: View {
                 exercise.sets.append(newSet)
                 try? modelContext.save()
                 // --- NOTIFICATION TIMER ---
-                // This now schedules a local notification instead of showing a visual timer.
-                NotificationManager.shared.scheduleRestNotification(duration: restDuration)
+                // This now schedules a local notification and fallback timer.
+                NotificationManager.shared.startRestTimer(duration: restDuration)
             }
         } header: {
             Text(exercise.name).font(.headline)
