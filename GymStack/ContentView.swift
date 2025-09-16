@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import Combine
+import UserNotifications
 
 // MARK: - 1. Data Models
 
@@ -59,6 +60,34 @@ final class ExerciseSet: Identifiable {
 enum WeightUnit: String, CaseIterable, Identifiable {
     case lbs, kg
     var id: Self { self }
+}
+
+// --- TIMER REPLACEMENT: Notification Manager ---
+// This class handles asking for permission and scheduling the rest timer notifications.
+class NotificationManager {
+    static let shared = NotificationManager() // Singleton for easy access
+    private init() {}
+
+    func requestAuthorization() {
+        let options: UNAuthorizationOptions = [.alert, .sound, .badge]
+        UNUserNotificationCenter.current().requestAuthorization(options: options) { (success, error) in
+            if let error = error {
+                print("Error requesting notification authorization: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func scheduleRestNotification(duration: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Rest Over!"
+        content.body = "Time for your next set."
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(duration), repeats: false)
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request)
+    }
 }
 
 
@@ -268,37 +297,24 @@ struct ActiveWorkoutView: View {
     var onFinish: () -> Void
     @State private var isShowingAddExerciseSheet = false
     
-    @State private var isTimerActive = false
-    @State private var timerKey = UUID()
-    @AppStorage("restDuration") private var restDuration: Int = 90
-    
     var body: some View {
-        ZStack(alignment: .bottom) {
-            VStack {
-                if session.exercises.isEmpty {
-                     ContentUnavailableView("Empty Workout", systemImage: "figure.strengthtraining.traditional", description: Text("Tap 'Add Exercise' to log your first exercise."))
-                } else {
-                    List {
-                        ForEach(session.exercises) { exercise in
-                            ExerciseSectionView(exercise: exercise, onAddSet: startTimer)
-                        }
-                        .onDelete(perform: deleteExercise)
+        VStack {
+            if session.exercises.isEmpty {
+                 ContentUnavailableView("Empty Workout", systemImage: "figure.strengthtraining.traditional", description: Text("Tap 'Add Exercise' to log your first exercise."))
+            } else {
+                List {
+                    ForEach(session.exercises) { exercise in
+                        ExerciseSectionView(exercise: exercise)
                     }
-                    .listStyle(.insetGrouped)
+                    .onDelete(perform: deleteExercise)
                 }
-                
-                VStack(spacing: 12) {
-                    Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).tint(.cyan)
-                    Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.bordered).controlSize(.large)
-                }.padding()
+                .listStyle(.insetGrouped)
             }
             
-            if isTimerActive {
-                RestTimerView(duration: restDuration, onFinish: { isTimerActive = false })
-                    .id(timerKey)
-                    .padding()
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            VStack(spacing: 12) {
+                Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).tint(.cyan)
+                Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.bordered).controlSize(.large)
+            }.padding()
         }
         .navigationTitle(session.name)
         .navigationBarBackButtonHidden(true)
@@ -306,11 +322,6 @@ struct ActiveWorkoutView: View {
             AddExerciseView(session: session)
                 .environment(\.modelContext, modelContext)
         }
-    }
-    
-    private func startTimer() {
-        withAnimation { isTimerActive = true }
-        timerKey = UUID()
     }
     
     private func finishWorkout() {
@@ -328,8 +339,9 @@ struct ActiveWorkoutView: View {
 struct ExerciseSectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Bindable var exercise: LoggedExercise
-    var onAddSet: () -> Void
+    
     @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+    @AppStorage("restDuration") private var restDuration: Int = 90
     
     var body: some View {
         Section {
@@ -346,7 +358,9 @@ struct ExerciseSectionView: View {
                 let newSet = ExerciseSet(reps: lastSet.reps, weight: lastSet.weight)
                 exercise.sets.append(newSet)
                 try? modelContext.save()
-                onAddSet()
+                // --- NOTIFICATION TIMER ---
+                // This now schedules a local notification instead of showing a visual timer.
+                NotificationManager.shared.scheduleRestNotification(duration: restDuration)
             }
         } header: {
             Text(exercise.name).font(.headline)
@@ -360,7 +374,6 @@ struct AddExerciseView: View {
     @Bindable var session: WorkoutSession
     
     @State private var exerciseName = ""
-    // --- FIX: Add state for exercise notes ---
     @State private var exerciseNotes = ""
     @State private var sets: [ExerciseSet] = [ExerciseSet(reps: 8, weight: 100.0)]
     
@@ -389,7 +402,6 @@ struct AddExerciseView: View {
                     }
                 }
                 
-                // --- FIX: Add section for notes input ---
                 Section(header: Text("Notes (Optional)")) {
                     TextField("e.g., focus on form, go slow", text: $exerciseNotes, axis: .vertical)
                         .lineLimit(3...)
@@ -418,7 +430,6 @@ struct AddExerciseView: View {
     }
     
     private func saveExercise() {
-        // --- FIX: Pass notes into the initializer ---
         let newExercise = LoggedExercise(name: exerciseName, notes: exerciseNotes, sets: sets)
         session.exercises.append(newExercise)
         try? modelContext.save()
@@ -559,53 +570,6 @@ struct EditSetView: View {
         }
     }
 }
-
-struct RestTimerView: View {
-    let duration: Int
-    var onFinish: () -> Void
-    
-    @State private var remainingTime: Int
-    @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
-    init(duration: Int, onFinish: @escaping () -> Void) {
-        self.duration = duration
-        self._remainingTime = State(initialValue: duration)
-        self.onFinish = onFinish
-    }
-    
-    var body: some View {
-        HStack {
-            Image(systemName: "timer")
-                .font(.headline)
-            Text("Rest: \(remainingTime)s")
-                .font(.headline.monospacedDigit())
-            
-            ProgressView(value: Double(remainingTime), total: Double(duration))
-                .progressViewStyle(.linear)
-                .tint(.cyan)
-
-            Button(action: onFinish) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .onReceive(timer) { _ in
-            if remainingTime > 0 {
-                remainingTime -= 1
-            } else {
-                timer.upstream.connect().cancel()
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                onFinish()
-            }
-        }
-        .onDisappear {
-            timer.upstream.connect().cancel()
-        }
-    }
-}
-
 
 // MARK: - Previews
 #Preview {
