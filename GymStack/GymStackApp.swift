@@ -7,9 +7,15 @@
 
 import SwiftUI
 import SwiftData
+import UserNotifications
 
 @main
 struct GymStackApp: App {
+    init() {
+        // Initialize local notifications as early as possible
+        NotificationManager.shared.configure()
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()

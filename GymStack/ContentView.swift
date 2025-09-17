@@ -79,12 +79,10 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func requestAuthorization() {
-        let options: UNAuthorizationOptions = [.alert, .sound, .badge]
+        let options: UNAuthorizationOptions = [.alert, .sound, .badge, .timeSensitive]
         UNUserNotificationCenter.current().requestAuthorization(options: options) { (granted, error) in
             if let error = error {
-                print("Error requesting notification authorization: \(error.localizedDescription)")
-            } else {
-                print("Notification permission granted: \(granted)")
+                print("[NotificationManager] Error requesting authorization: \(error.localizedDescription)")
             }
         }
     }
@@ -121,12 +119,13 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private func startFallbackHapticTimer(duration: Int) {
         let deadline = DispatchTime.now() + .seconds(duration)
         DispatchQueue.main.asyncAfter(deadline: deadline) {
-            // Light haptic
-            let generator = UIImpactFeedbackGenerator(style: .light)
-            generator.prepare()
-            generator.impactOccurred()
-            // Play a short system sound as an audible cue
-            AudioServicesPlaySystemSound(1007)
+            if #available(iOS 13.0, *) {
+                let generator = UIImpactFeedbackGenerator(style: .light)
+                generator.prepare()
+                generator.impactOccurred()
+            }
+            // Try an alternate system sound ID that is commonly audible
+            AudioServicesPlaySystemSound(1005)
         }
     }
 
@@ -138,9 +137,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.prepare()
         generator.impactOccurred()
-
-        // Present banner/sound in foreground as well
-        completionHandler([.banner, .sound])
+        // Present banner/sound/list in foreground as well
+        if #available(iOS 14.0, *) {
+            completionHandler([.banner, .sound, .list])
+        } else {
+            completionHandler([.alert, .sound])
+        }
     }
 }
 
@@ -159,10 +161,6 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
         .tint(.cyan)
-        .onAppear {
-            // Ask for notification permission early
-            NotificationManager.shared.configure()
-        }
     }
 }
 
