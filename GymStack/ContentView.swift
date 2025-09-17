@@ -463,7 +463,7 @@ struct AddExerciseView: View {
                         .lineLimit(3...)
                 }
                 
-                Section(header: Text("Sets")) {
+                Section(header: Text("Sets"), footer: Text("After you add sets and save, a rest timer will start to match the in-workout Add Set button behavior.")) {
                     ForEach($sets) { $set in
                         HStack(spacing: 15) {
                             Text("Reps:").frame(width: 45)
@@ -489,6 +489,13 @@ struct AddExerciseView: View {
         let newExercise = LoggedExercise(name: exerciseName, notes: exerciseNotes, sets: sets)
         session.exercises.append(newExercise)
         try? modelContext.save()
+        // Start a rest timer when sets are added from this flow to match in-workout behavior
+        if !sets.isEmpty {
+            // Use the same rest duration as settings
+            let duration = UserDefaults.standard.integer(forKey: "restDuration")
+            let resolved = duration > 0 ? duration : 90
+            NotificationManager.shared.startRestTimer(duration: resolved)
+        }
         dismiss()
     }
 }
@@ -499,6 +506,7 @@ struct WorkoutDetailView: View {
     
     @State private var editingExercise: LoggedExercise?
     @State private var editingSet: ExerciseSet?
+    @State private var editingNotesExercise: LoggedExercise?
     
     @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
 
@@ -515,6 +523,15 @@ struct WorkoutDetailView: View {
                     ForEach(session.exercises) { exercise in
                         DisclosureGroup(exercise.name) {
                             VStack(alignment: .leading, spacing: 10) {
+                                Button(action: { editingNotesExercise = exercise }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: exercise.notes.isEmpty ? "plus.bubble" : "pencil.and.outline")
+                                        Text(exercise.notes.isEmpty ? "Add Note" : "Edit Note")
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                
                                 if !exercise.notes.isEmpty {
                                     Text(exercise.notes).font(.caption).foregroundStyle(.secondary).padding(.bottom, 5)
                                 }
@@ -530,6 +547,13 @@ struct WorkoutDetailView: View {
                                 editingExercise = exercise
                             }
                         }
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                editingNotesExercise = exercise
+                            } label: {
+                                Label("Notes", systemImage: "pencil")
+                            }.tint(.indigo)
+                        }
                     }
                 }
             }
@@ -543,6 +567,9 @@ struct WorkoutDetailView: View {
         .sheet(isPresented: $isEditingSession) { EditSessionView(session: session) }
         .sheet(item: $editingExercise) { exercise in EditExerciseView(exercise: exercise) }
         .sheet(item: $editingSet) { set in EditSetView(set: set) }
+        .sheet(item: $editingNotesExercise) { exercise in
+            EditNotesView(exercise: exercise)
+        }
     }
 }
 
@@ -593,6 +620,27 @@ struct EditExerciseView: View {
                 Section("Notes") { TextField("Notes (e.g. 'Felt strong')", text: $exercise.notes, axis: .vertical) }
             }
             .navigationTitle("Edit Exercise")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+struct EditNotesView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Bindable var exercise: LoggedExercise
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Notes") {
+                    TextField("Notes (e.g. 'Felt strong, focus on tempo')", text: $exercise.notes, axis: .vertical)
+                        .lineLimit(3...)
+                }
+            }
+            .navigationTitle("Edit Notes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
