@@ -11,6 +11,57 @@ import Combine
 import UserNotifications
 import AudioToolbox
 
+// MARK: - Theme
+private struct ColorTheme {
+    // Core brand colors
+    static let primary = Color.teal
+    static let accent = Color.indigo
+
+    // Surfaces
+    static let background = Color(uiColor: .systemGroupedBackground)
+    static let surface = Color(uiColor: .secondarySystemBackground)
+
+    // Semantic accents
+    static let success = Color.green
+    static let warning = Color.orange
+    static let info = Color.blue
+
+    // Text
+    static let primaryText = Color.primary
+    static let secondaryText = Color.secondary
+}
+
+private struct ThemedProminentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(ColorTheme.primary.opacity(configuration.isPressed ? 0.85 : 1.0))
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 3)
+            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+private struct ThemedBorderedButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ColorTheme.accent.opacity(configuration.isPressed ? 0.6 : 1.0), lineWidth: 1)
+            )
+            .foregroundStyle(ColorTheme.accent)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
 // MARK: - 1. Data Models
 
 @Model
@@ -160,7 +211,7 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
         }
-        .tint(.cyan)
+        .tint(ColorTheme.primary)
     }
 }
 
@@ -176,7 +227,7 @@ struct WorkoutHistoryView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemGroupedBackground).edgesIgnoringSafeArea(.all)
+                ColorTheme.background.edgesIgnoringSafeArea(.all)
                 
                 if workoutSessions.isEmpty {
                     ContentUnavailableView("No Workouts Logged", systemImage: "figure.run.circle", description: Text("Tap the '+' button to start your first workout."))
@@ -250,7 +301,7 @@ struct WorkoutCalendarView: View {
                     let workoutsForDay = workouts(for: date)
                     if !workoutsForDay.isEmpty {
                         ForEach(workoutsForDay) { session in
-                            Text(session.name).font(.caption2).lineLimit(1).padding(4).background(Color.cyan.opacity(0.2)).cornerRadius(4)
+                            Text(session.name).font(.caption2).lineLimit(1).padding(4).background(ColorTheme.primary.opacity(0.18)).cornerRadius(4)
                         }
                     }
                     Spacer()
@@ -284,6 +335,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .tint(ColorTheme.accent)
         }
     }
 }
@@ -299,7 +351,7 @@ struct CalendarView<DayContent: View>: View {
     var body: some View { VStack(spacing: 8) { header; weekdayHeader; monthGrid }.padding() }
     private var header: some View { HStack { Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }; Spacer(); Text(monthTitle(for: displayedMonth)).font(.headline); Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") } } }
     private var weekdayHeader: some View { let symbols = Calendar.current.shortWeekdaySymbols; return HStack { ForEach(symbols, id: \.self) { symbol in Text(symbol).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity) } } }
-    private var monthGrid: some View { let dates = datesForMonth(displayedMonth); return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) { ForEach(dates, id: \.self) { date in if Calendar.current.isDate(date, equalTo: displayedMonth, toGranularity: .month) { dayContent(date).frame(maxWidth: .infinity, minHeight: 44).background(RoundedRectangle(cornerRadius: 6).fill(Color(.secondarySystemBackground))) } else { Text("").frame(maxWidth: .infinity, minHeight: 44) } } } }
+    private var monthGrid: some View { let dates = datesForMonth(displayedMonth); return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) { ForEach(dates, id: \.self) { date in if Calendar.current.isDate(date, equalTo: displayedMonth, toGranularity: .month) { dayContent(date).frame(maxWidth: .infinity, minHeight: 44).background(RoundedRectangle(cornerRadius: 6).fill(ColorTheme.surface)) } else { Text("").frame(maxWidth: .infinity, minHeight: 44) } } } }
     private func monthTitle(for date: Date) -> String { date.formatted(.dateTime.year().month(.wide)) }
     private func startOfMonth(for date: Date) -> Date { let comps = Calendar.current.dateComponents([.year, .month], from: date); return Calendar.current.date(from: comps) ?? date }
     private func datesForMonth(_ month: Date) -> [Date] { let cal = Calendar.current; let start = startOfMonth(for: month); guard let range = cal.range(of: .day, in: .month, for: start) else { return [] }; let firstWeekdayIndex = cal.component(.weekday, from: start); let leadingEmpty = (firstWeekdayIndex - cal.firstWeekday + 7) % 7; var dates: [Date] = []; if leadingEmpty > 0 { for i in stride(from: leadingEmpty, to: 0, by: -1) { if let d = cal.date(byAdding: .day, value: -i, to: start) { dates.append(d) } } }; for day in range { if let d = cal.date(byAdding: .day, value: day - 1, to: start) { dates.append(d) } }; let remainder = dates.count % 7; if remainder != 0 { let needed = 7 - remainder; if let last = dates.last { for i in 1...needed { if let d = cal.date(byAdding: .day, value: i, to: last) { dates.append(d) } } } }; return dates }
@@ -310,8 +362,8 @@ struct WorkoutRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(session.name).font(.headline).foregroundColor(.primary)
-            HStack { Image(systemName: "calendar"); Text(session.date, style: .date) }.font(.subheadline).foregroundStyle(Color(.systemOrange))
-            HStack { Image(systemName: "number"); Text("\(session.exercises.count) exercises") }.font(.subheadline).foregroundStyle(Color(.systemGreen))
+            HStack { Image(systemName: "calendar"); Text(session.date, style: .date) }.font(.subheadline).foregroundStyle(ColorTheme.info)
+            HStack { Image(systemName: "number"); Text("\(session.exercises.count) exercises") }.font(.subheadline).foregroundStyle(ColorTheme.success)
         }.padding(.vertical, 8)
     }
 }
@@ -368,8 +420,12 @@ struct ActiveWorkoutView: View {
             }
             
             VStack(spacing: 12) {
-                Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).tint(.cyan)
-                Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }.buttonStyle(.bordered).controlSize(.large)
+                Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }
+                    .buttonStyle(ThemedProminentButtonStyle())
+                    .controlSize(.large)
+                Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }
+                    .buttonStyle(ThemedBorderedButtonStyle())
+                    .controlSize(.large)
             }.padding()
         }
         .navigationTitle(session.name)
@@ -418,6 +474,7 @@ struct ExerciseSectionView: View {
                 // This now schedules a local notification and fallback timer.
                 NotificationManager.shared.startRestTimer(duration: restDuration)
             }
+            .tint(ColorTheme.accent)
         } header: {
             Text(exercise.name).font(.headline)
         }
@@ -474,6 +531,7 @@ struct AddExerciseView: View {
                         }
                     }.onDelete { indices in sets.remove(atOffsets: indices) }
                     Button("Add Set", systemImage: "plus") { sets.append(ExerciseSet(reps: 8, weight: 100.0)) }
+                        .tint(ColorTheme.accent)
                 }
             }
             .navigationTitle("Add Exercise")
@@ -513,8 +571,8 @@ struct WorkoutDetailView: View {
     var body: some View {
         List {
             Section(header: Text("Details")) {
-                HStack { Image(systemName: "text.badge.checkmark").foregroundStyle(Color(.systemGreen)); Text(session.name) }
-                HStack { Image(systemName: "calendar").foregroundStyle(Color(.systemOrange)); Text(session.date, style: .date) }
+                HStack { Image(systemName: "text.badge.checkmark").foregroundStyle(ColorTheme.primary); Text(session.name) }
+                HStack { Image(systemName: "calendar").foregroundStyle(ColorTheme.info); Text(session.date, style: .date) }
             }
             Section(header: Text("Exercises")) {
                 if session.exercises.isEmpty {
@@ -552,7 +610,7 @@ struct WorkoutDetailView: View {
                                 editingNotesExercise = exercise
                             } label: {
                                 Label("Notes", systemImage: "pencil")
-                            }.tint(.indigo)
+                            }.tint(ColorTheme.accent)
                         }
                     }
                 }
@@ -579,7 +637,7 @@ struct SetRowView: View {
     let unit: String
     var body: some View {
         HStack {
-            Text("Set \(setNumber)").fontWeight(.medium).frame(width: 60, alignment: .leading)
+            Text("Set \(setNumber)").fontWeight(.semibold).foregroundStyle(ColorTheme.primary).frame(width: 60, alignment: .leading)
             Spacer()
             Text("\(set.reps)").frame(width: 50)
             Text("reps").foregroundColor(.secondary)
@@ -679,5 +737,6 @@ struct EditSetView: View {
 #Preview {
     ContentView()
         .modelContainer(for: [WorkoutSession.self, LoggedExercise.self, ExerciseSet.self], inMemory: true)
+        .tint(ColorTheme.primary)
 }
 
