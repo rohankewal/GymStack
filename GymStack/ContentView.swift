@@ -10,6 +10,7 @@ import SwiftData
 import Combine
 import UserNotifications
 import AudioToolbox
+// NOTE: Ensure Info.plist contains a clear NSUserNotificationUsageDescription explaining rest alerts.
 
 // MARK: - Theme
 private struct ColorTheme {
@@ -62,8 +63,7 @@ private struct ThemedBorderedButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - 1. Data Models
-
+// MARK: - Data Models
 @Model
 final class WorkoutSession {
     @Attribute(.unique) var id: UUID
@@ -96,7 +96,7 @@ final class LoggedExercise {
 }
 
 @Model
-final class ExerciseSet: Identifiable {
+final class ExerciseSet: Identifiable, Equatable {
     @Attribute(.unique) var id: UUID
     var reps: Int
     var weight: Double
@@ -107,6 +107,7 @@ final class ExerciseSet: Identifiable {
         self.reps = reps
         self.weight = weight
     }
+    static func == (lhs: ExerciseSet, rhs: ExerciseSet) -> Bool { lhs.id == rhs.id }
 }
 
 enum WeightUnit: String, CaseIterable, Identifiable {
@@ -124,22 +125,75 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().delegate = self
     }
 
-    // Call this early in app lifecycle to prompt for permission
-    func configure() {
-        requestAuthorization()
+    enum AuthorizationState {
+        case notDetermined, denied, authorized
     }
 
-    private func requestAuthorization() {
-        let options: UNAuthorizationOptions = [.alert, .sound, .badge, .timeSensitive]
-        UNUserNotificationCenter.current().requestAuthorization(options: options) { (granted, error) in
-            if let error = error {
-                print("[NotificationManager] Error requesting authorization: \(error.localizedDescription)")
+    private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
+
+    // Query current authorization status
+    func authorizationState(completion: @escaping (AuthorizationState) -> Void) {
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .notDetermined: completion(.notDetermined)
+            case .denied: completion(.denied)
+            case .authorized, .provisional, .ephemeral: completion(.authorized)
+            @unknown default: completion(.denied)
             }
         }
     }
 
-    func scheduleRestNotification(duration: Int) {
+    // Request permission only after clear, user-initiated action
+    func requestAuthorizationIfNeeded(presentingReason: String? = nil, completion: @escaping (Bool) -> Void) {
+        authorizationState { state in
+            switch state {
+            case .authorized:
+                completion(true)
+            case .denied:
+                completion(false)
+            case .notDetermined:
+                // NOTE: Do not request .timeSensitive here; it's controlled by entitlement. Use interruptionLevel on notifications instead.
+                let options: UNAuthorizationOptions = [.alert, .sound, .badge]
+                self.center.requestAuthorization(options: options) { granted, error in
+                    if let error = error {
+                        print("[NotificationManager] Authorization error: \(error.localizedDescription)")
+                    }
+                    DispatchQueue.main.async { completion(granted) }
+                }
+            }
+        }
+    }
+
+    // Public entry point used by UI when a new set is added
+    func startRestTimer(duration: Int) {
         let duration = max(1, duration)
+        // Respect user preference toggle
+        let enabled = UserDefaults.standard.bool(forKey: "notificationsEnabled")
+        guard enabled else { return }
+
+        authorizationState { state in
+            switch state {
+            case .authorized:
+                self.scheduleRestNotification(duration: duration)
+                self.startFallbackHapticTimer(duration: duration)
+            case .notDetermined:
+                self.requestAuthorizationIfNeeded { granted in
+                    if granted {
+                        self.scheduleRestNotification(duration: duration)
+                        self.startFallbackHapticTimer(duration: duration)
+                    } else {
+                        // Still provide local feedback without notifications
+                        self.startFallbackHapticTimer(duration: duration)
+                    }
+                }
+            case .denied:
+                // Do not schedule notifications; provide local feedback only
+                self.startFallbackHapticTimer(duration: duration)
+            }
+        }
+    }
+
+    private func scheduleRestNotification(duration: Int) {
         let content = UNMutableNotificationContent()
         content.title = "Rest Over!"
         content.body = "Time for your next set."
@@ -151,20 +205,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(duration), repeats: false)
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
 
-        UNUserNotificationCenter.current().add(request) { error in
+        center.add(request) { error in
             if let error = error {
                 print("Failed to schedule rest notification: \(error.localizedDescription)")
             }
         }
-    }
-
-    // Public entry point used by UI when a new set is added
-    func startRestTimer(duration: Int) {
-        let duration = max(1, duration)
-        // Schedule local notification
-        scheduleRestNotification(duration: duration)
-        // Also start a foreground fallback haptic + sound so the user gets feedback even if notifications are suppressed
-        startFallbackHapticTimer(duration: duration)
     }
 
     private func startFallbackHapticTimer(duration: Int) {
@@ -175,7 +220,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 generator.prepare()
                 generator.impactOccurred()
             }
-            // Try an alternate system sound ID that is commonly audible
+            // Provide a light, non-intrusive system sound; users can silence device if undesired
             AudioServicesPlaySystemSound(1005)
         }
     }
@@ -184,11 +229,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // Light haptic when the rest ends while app is in foreground
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.prepare()
         generator.impactOccurred()
-        // Present banner/sound/list in foreground as well
         if #available(iOS 14.0, *) {
             completionHandler([.banner, .sound, .list])
         } else {
@@ -271,7 +314,7 @@ struct WorkoutHistoryView: View {
     }
     
     private func duplicate(session: WorkoutSession) {
-        let newSession = WorkoutSession(name: session.name, date: .now)
+        let newSession = WorkoutSession(name: session.name, date: Date())
         
         for exercise in session.exercises {
             let newExercise = LoggedExercise(name: exercise.name, notes: exercise.notes)
@@ -319,7 +362,9 @@ struct WorkoutCalendarView: View {
 struct SettingsView: View {
     @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
     @AppStorage("restDuration") private var restDuration: Int = 90
-    
+    @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = false
+    @State private var authDescription: String = ""
+
     var body: some View {
         NavigationStack {
             Form {
@@ -330,12 +375,73 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    
+
                     Stepper("Rest Timer: \(restDuration) seconds", value: $restDuration, in: 30...300, step: 15)
+                }
+
+                Section(header: Text("Notifications"), footer: Text("Enable time-sensitive notifications so we can alert you when your rest period ends. You can change this later in Settings.")) {
+                    Toggle(isOn: Binding(
+                        get: { notificationsEnabled },
+                        set: { newValue in
+                            notificationsEnabled = newValue
+                            if newValue {
+                                NotificationManager.shared.requestAuthorizationIfNeeded { granted in
+                                    if !granted {
+                                        notificationsEnabled = false
+                                        authDescription = "Notifications are disabled. Enable them in Settings > Notifications to receive rest alerts."
+                                    } else {
+                                        authDescription = "Notifications enabled."
+                                    }
+                                }
+                            } else {
+                                authDescription = "Notifications disabled."
+                            }
+                        }
+                    )) {
+                        Text("Rest Alerts")
+                    }
+
+                    // If notifications are denied, help the user navigate to Settings
+                    if authDescription.contains("disabled") {
+                        Button {
+                            openSystemSettings()
+                        } label: {
+                            Label("Open Settings", systemImage: "gear")
+                        }
+                    }
+
+                    if !authDescription.isEmpty {
+                        Text(authDescription)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("Settings")
             .tint(ColorTheme.accent)
+            .onAppear { refreshAuthStatus() }
+        }
+    }
+
+    private func refreshAuthStatus() {
+        NotificationManager.shared.authorizationState { state in
+            DispatchQueue.main.async {
+                switch state {
+                case .authorized:
+                    authDescription = notificationsEnabled ? "Notifications enabled." : "Notifications are available. Toggle on to receive rest alerts."
+                case .denied:
+                    authDescription = "Notifications are disabled. Enable them in Settings > Notifications to receive rest alerts."
+                case .notDetermined:
+                    authDescription = "We’ll ask for permission only if you enable Rest Alerts."
+                }
+            }
+        }
+    }
+    
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        if UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
         }
     }
 }
@@ -347,7 +453,7 @@ struct CalendarView<DayContent: View>: View {
     let dayContent: (Date) -> DayContent
     @State private var monthOffset: Int = 0
     init(@ViewBuilder dayContent: @escaping (Date) -> DayContent) { self.dayContent = dayContent }
-    private var displayedMonth: Date { Calendar.current.date(byAdding: .month, value: monthOffset, to: startOfMonth(for: .now)) ?? .now }
+    private var displayedMonth: Date { Calendar.current.date(byAdding: .month, value: monthOffset, to: startOfMonth(for: Date())) ?? Date() }
     var body: some View { VStack(spacing: 8) { header; weekdayHeader; monthGrid }.padding() }
     private var header: some View { HStack { Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }; Spacer(); Text(monthTitle(for: displayedMonth)).font(.headline); Spacer(); Button { monthOffset += 1 } label: { Image(systemName: "chevron.right") } } }
     private var weekdayHeader: some View { let symbols = Calendar.current.shortWeekdaySymbols; return HStack { ForEach(symbols, id: \.self) { symbol in Text(symbol).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity) } } }
@@ -392,7 +498,7 @@ struct StartWorkoutView: View {
     }
     
     private func startWorkout() {
-        let newSession = WorkoutSession(name: workoutName, date: .now)
+        let newSession = WorkoutSession(name: workoutName, date: Date())
         modelContext.insert(newSession)
         try? modelContext.save()
         self.newWorkoutSession = newSession
