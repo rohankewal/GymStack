@@ -13,7 +13,7 @@ import UserNotifications
 struct GymStackApp: App {
     init() {
         // Initialize local notifications as early as possible
-        NotificationManager.shared.configure()
+        NotificationManager.shared
     }
     
     var body: some Scene {
