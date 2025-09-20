@@ -243,16 +243,24 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
 // MARK: - 3. Main View with TabBar
 struct ContentView: View {
+    @AppStorage("hasSeenSplash") private var hasSeenSplash: Bool = false
+
     var body: some View {
-        TabView {
-            WorkoutHistoryView()
-                .tabItem { Label("History", systemImage: "list.bullet") }
-            
-            WorkoutCalendarView()
-                .tabItem { Label("Calendar", systemImage: "calendar") }
-            
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gear") }
+        Group {
+            if hasSeenSplash {
+                TabView {
+                    WorkoutHistoryView()
+                        .tabItem { Label("History", systemImage: "list.bullet") }
+                    
+                    WorkoutCalendarView()
+                        .tabItem { Label("Calendar", systemImage: "calendar") }
+                    
+                    SettingsView()
+                        .tabItem { Label("Settings", systemImage: "gear") }
+                }
+            } else {
+                SplashView(onContinue: { hasSeenSplash = true })
+            }
         }
         .tint(ColorTheme.primary)
     }
@@ -448,6 +456,74 @@ struct SettingsView: View {
 
 
 // MARK: - 5. Supporting Views
+
+struct SplashView: View {
+    var onContinue: () -> Void
+    @State private var scale: CGFloat = 0.8
+    @State private var opacity: Double = 0.0
+
+    var body: some View {
+        ZStack {
+            ColorTheme.background.ignoresSafeArea()
+
+            VStack(spacing: 24) {
+                ZStack {
+                    Circle()
+                        .fill(ColorTheme.primary.opacity(0.15))
+                        .frame(width: 160, height: 160)
+                        .scaleEffect(scale)
+                        .animation(.spring(response: 0.7, dampingFraction: 0.7, blendDuration: 0.2), value: scale)
+
+                    Image(systemName: "dumbbell.fill")
+                        .font(.system(size: 64, weight: .bold))
+                        .foregroundStyle(ColorTheme.primary)
+                        .scaleEffect(scale)
+                        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
+                        .animation(.spring(response: 0.6, dampingFraction: 0.65), value: scale)
+                }
+
+                VStack(spacing: 6) {
+                    Text("GymStack")
+                        .font(.largeTitle.bold())
+                        .opacity(opacity)
+                        .animation(.easeIn(duration: 0.4), value: opacity)
+
+                    Text("Build strength. Track progress.")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                        .opacity(opacity)
+                        .animation(.easeIn(duration: 0.6).delay(0.1), value: opacity)
+                }
+
+                Spacer().frame(height: 12)
+
+                Button(action: onContinue) {
+                    Label("Continue", systemImage: "arrow.right.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(ThemedProminentButtonStyle())
+                .padding(.horizontal, 24)
+                .opacity(opacity)
+                .animation(.easeIn(duration: 0.6).delay(0.2), value: opacity)
+
+                Text("You can change preferences anytime in Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                    .opacity(opacity)
+                    .animation(.easeIn(duration: 0.6).delay(0.25), value: opacity)
+            }
+            .padding()
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                scale = 1.0
+                opacity = 1.0
+            }
+        }
+    }
+}
 
 struct CalendarView<DayContent: View>: View {
     let dayContent: (Date) -> DayContent
