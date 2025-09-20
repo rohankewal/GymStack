@@ -12,6 +12,10 @@ import UserNotifications
 import AudioToolbox
 // NOTE: Ensure Info.plist contains a clear NSUserNotificationUsageDescription explaining rest alerts.
 
+extension Notification.Name {
+    static let requestEditSetFromActive = Notification.Name("requestEditSetFromActive")
+}
+
 // MARK: - Theme
 private struct ColorTheme {
     // Core brand colors
@@ -120,13 +124,38 @@ enum WeightUnit: String, CaseIterable, Identifiable {
 class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager() // Singleton for easy access
 
+    enum AuthorizationState {
+        case notDetermined, denied, authorized
+    }
+    
+    // Track last scheduled rest notification to manage cancellation/suppression
+    private var lastRequestIdentifier: String?
+    private let restCategoryIdentifier = "REST_TIMER_CATEGORY"
+    private let restNotificationThread = "rest.timer.thread"
+
     private override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
-    }
+        
+        // Register a category we can use to indicate a rest notification and allow silent handling when appropriate
+        let category = UNNotificationCategory(identifier: restCategoryIdentifier, actions: [], intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([category])
 
-    enum AuthorizationState {
-        case notDetermined, denied, authorized
+        // When app comes to foreground, clear any delivered/pending rest notifications and prevent stale sounds
+        NotificationCenter.default.addObserver(self, selector: #selector(handleWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+    
+    @objc private func handleWillEnterForeground() {
+        // Remove pending and delivered rest notifications so the system won't play sounds late
+        center.getDeliveredNotifications { [weak self] delivered in
+            let ids = delivered.filter { $0.request.content.threadIdentifier == self?.restNotificationThread }.map { $0.request.identifier }
+            if !ids.isEmpty {
+                self?.center.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+        }
+        if let id = lastRequestIdentifier {
+            center.removePendingNotificationRequests(withIdentifiers: [id])
+        }
     }
 
     private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
@@ -167,6 +196,10 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     // Public entry point used by UI when a new set is added
     func startRestTimer(duration: Int) {
         let duration = max(1, duration)
+        // Cancel any previous pending rest notification to avoid duplicates
+        if let id = lastRequestIdentifier {
+            center.removePendingNotificationRequests(withIdentifiers: [id])
+        }
         // Respect user preference toggle
         let enabled = UserDefaults.standard.bool(forKey: "notificationsEnabled")
         guard enabled else { return }
@@ -197,13 +230,18 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = "Rest Over!"
         content.body = "Time for your next set."
+        // Use default sound; watchOS may handle and mirror. We'll suppress late playback on iPhone via delegate and foreground cleanup.
         content.sound = .default
+        content.categoryIdentifier = restCategoryIdentifier
+        content.threadIdentifier = restNotificationThread
         if #available(iOS 15.0, *) {
             content.interruptionLevel = .timeSensitive
         }
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(duration), repeats: false)
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+        let identifier = UUID().uuidString
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        self.lastRequestIdentifier = identifier
 
         center.add(request) { error in
             if let error = error {
@@ -215,13 +253,15 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private func startFallbackHapticTimer(duration: Int) {
         let deadline = DispatchTime.now() + .seconds(duration)
         DispatchQueue.main.asyncAfter(deadline: deadline) {
-            if #available(iOS 13.0, *) {
-                let generator = UIImpactFeedbackGenerator(style: .light)
-                generator.prepare()
-                generator.impactOccurred()
+            // If app is active (user just unlocked/opened), skip playing the sound to avoid a late, redundant alert
+            if UIApplication.shared.applicationState != .active {
+                if #available(iOS 13.0, *) {
+                    let generator = UIImpactFeedbackGenerator(style: .light)
+                    generator.prepare()
+                    generator.impactOccurred()
+                }
+                AudioServicesPlaySystemSound(1005)
             }
-            // Provide a light, non-intrusive system sound; users can silence device if undesired
-            AudioServicesPlaySystemSound(1005)
         }
     }
 
@@ -233,10 +273,18 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         generator.prepare()
         generator.impactOccurred()
         if #available(iOS 14.0, *) {
-            completionHandler([.banner, .sound, .list])
+            completionHandler([.banner, .list])
         } else {
-            completionHandler([.alert, .sound])
+            completionHandler([.alert])
         }
+    }
+    
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        // Clear tracking so future timers don't try to cancel an old id
+        if response.notification.request.content.threadIdentifier == restNotificationThread {
+            lastRequestIdentifier = nil
+        }
+        completionHandler()
     }
 }
 
@@ -586,6 +634,7 @@ struct ActiveWorkoutView: View {
     @Bindable var session: WorkoutSession
     var onFinish: () -> Void
     @State private var isShowingAddExerciseSheet = false
+    @State private var editingSetFromActive: ExerciseSet?
     
     var body: some View {
         VStack {
@@ -616,6 +665,15 @@ struct ActiveWorkoutView: View {
             AddExerciseView(session: session)
                 .environment(\.modelContext, modelContext)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .requestEditSetFromActive)) { output in
+            if let set = output.object as? ExerciseSet {
+                self.editingSetFromActive = set
+            }
+        }
+        .sheet(item: $editingSetFromActive) { set in
+            EditSetView(set: set)
+                .environment(\.modelContext, modelContext)
+        }
     }
     
     private func finishWorkout() {
@@ -640,7 +698,16 @@ struct ExerciseSectionView: View {
     var body: some View {
         Section {
             ForEach(exercise.sets.indices, id: \.self) { index in
-                 SetRowView(set: exercise.sets[index], setNumber: index + 1, unit: weightUnit.rawValue)
+                SetRowView(set: exercise.sets[index], setNumber: index + 1, unit: weightUnit.rawValue)
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        Button {
+                            // Post a notification to inform ActiveWorkoutView to present the editor for this set
+                            NotificationCenter.default.post(name: .requestEditSetFromActive, object: exercise.sets[index])
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .tint(ColorTheme.accent)
+                    }
             }
             .onDelete { indices in
                 exercise.sets.remove(atOffsets: indices)
@@ -648,15 +715,11 @@ struct ExerciseSectionView: View {
             }
             
             Button("Add Set", systemImage: "plus") {
-                let lastSet = exercise.sets.last ?? ExerciseSet(reps: 8, weight: 100)
-                let newSet = ExerciseSet(reps: lastSet.reps, weight: lastSet.weight)
-                exercise.sets.append(newSet)
-                try? modelContext.save()
-                // --- NOTIFICATION TIMER ---
-                // This now schedules a local notification and fallback timer.
+                exercise.sets.append(ExerciseSet(reps: 8, weight: 100.0))
+                // Start a rest timer to match in-workout behavior when adding a set here
                 NotificationManager.shared.startRestTimer(duration: restDuration)
             }
-            .tint(ColorTheme.accent)
+                .tint(ColorTheme.accent)
         } header: {
             Text(exercise.name).font(.headline)
         }
@@ -682,6 +745,7 @@ struct AddExerciseView: View {
     }
     
     @AppStorage("weightUnit") private var weightUnit: WeightUnit = .lbs
+    @AppStorage("restDuration") private var restDuration: Int = 90
     
     var body: some View {
         NavigationStack {
@@ -712,7 +776,11 @@ struct AddExerciseView: View {
                             Text(weightUnit.rawValue)
                         }
                     }.onDelete { indices in sets.remove(atOffsets: indices) }
-                    Button("Add Set", systemImage: "plus") { sets.append(ExerciseSet(reps: 8, weight: 100.0)) }
+                    Button("Add Set", systemImage: "plus") {
+                        sets.append(ExerciseSet(reps: 8, weight: 100.0))
+                        // Start a rest timer to match in-workout behavior when adding a set here
+                        NotificationManager.shared.startRestTimer(duration: restDuration)
+                    }
                         .tint(ColorTheme.accent)
                 }
             }
@@ -731,10 +799,7 @@ struct AddExerciseView: View {
         try? modelContext.save()
         // Start a rest timer when sets are added from this flow to match in-workout behavior
         if !sets.isEmpty {
-            // Use the same rest duration as settings
-            let duration = UserDefaults.standard.integer(forKey: "restDuration")
-            let resolved = duration > 0 ? duration : 90
-            NotificationManager.shared.startRestTimer(duration: resolved)
+            NotificationManager.shared.startRestTimer(duration: restDuration)
         }
         dismiss()
     }
@@ -921,4 +986,3 @@ struct EditSetView: View {
         .modelContainer(for: [WorkoutSession.self, LoggedExercise.self, ExerciseSet.self], inMemory: true)
         .tint(ColorTheme.primary)
 }
-
