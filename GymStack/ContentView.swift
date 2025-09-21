@@ -635,6 +635,7 @@ struct ActiveWorkoutView: View {
     var onFinish: () -> Void
     @State private var isShowingAddExerciseSheet = false
     @State private var editingSetFromActive: ExerciseSet?
+    @State private var showFinishConfirmation = false
     
     var body: some View {
         VStack {
@@ -654,7 +655,7 @@ struct ActiveWorkoutView: View {
                 Button(action: { isShowingAddExerciseSheet = true }) { Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity) }
                     .buttonStyle(ThemedProminentButtonStyle())
                     .controlSize(.large)
-                Button(action: finishWorkout) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }
+                Button(action: { showFinishConfirmation = true }) { Text("Finish Workout").font(.headline).frame(maxWidth: .infinity) }
                     .buttonStyle(ThemedBorderedButtonStyle())
                     .controlSize(.large)
             }.padding()
@@ -673,6 +674,14 @@ struct ActiveWorkoutView: View {
         .sheet(item: $editingSetFromActive) { set in
             EditSetView(set: set)
                 .environment(\.modelContext, modelContext)
+        }
+        .alert("End Workout?", isPresented: $showFinishConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("End Workout", role: .destructive) {
+                finishWorkout()
+            }
+        } message: {
+            Text("Are you sure you would like to end this workout?")
         }
     }
     
