@@ -127,11 +127,19 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     enum AuthorizationState {
         case notDetermined, denied, authorized
     }
-    
-    // Track last scheduled rest notification to manage cancellation/suppression
+
+    struct SessionToken: Equatable { let id: UUID }
+    private var activeSessionToken: SessionToken?
+    private var fallbackTimerWorkItem: DispatchWorkItem?
     private var lastRequestIdentifier: String?
+
     private let restCategoryIdentifier = "REST_TIMER_CATEGORY"
     private let restNotificationThread = "rest.timer.thread"
+
+    // Observability: track app state to suppress late sounds
+    private var isAppActive: Bool {
+        return UIApplication.shared.applicationState == .active
+    }
 
     private override init() {
         super.init()
@@ -156,6 +164,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         if let id = lastRequestIdentifier {
             center.removePendingNotificationRequests(withIdentifiers: [id])
         }
+        fallbackTimerWorkItem?.cancel()
+        fallbackTimerWorkItem = nil
     }
 
     private var center: UNUserNotificationCenter { UNUserNotificationCenter.current() }
@@ -193,13 +203,37 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    // Public entry point used by UI when a new set is added
-    func startRestTimer(duration: Int) {
-        let duration = max(1, duration)
-        // Cancel any previous pending rest notification to avoid duplicates
-        if let id = lastRequestIdentifier {
-            center.removePendingNotificationRequests(withIdentifiers: [id])
+    // Create/refresh a session token which ties rest timers to a specific logical change (e.g., set added/edited)
+    @discardableResult
+    func beginRestSession() -> SessionToken {
+        let token = SessionToken(id: UUID())
+        activeSessionToken = token
+        // Cancel any pending notification and fallback timer when starting a fresh session
+        if let id = lastRequestIdentifier { center.removePendingNotificationRequests(withIdentifiers: [id]) }
+        lastRequestIdentifier = nil
+        fallbackTimerWorkItem?.cancel(); fallbackTimerWorkItem = nil
+        return token
+    }
+
+    // Cancel any in-flight timers/notifications for the current session
+    func cancelRestSession() {
+        if let id = lastRequestIdentifier { center.removePendingNotificationRequests(withIdentifiers: [id]) }
+        lastRequestIdentifier = nil
+        activeSessionToken = nil
+        fallbackTimerWorkItem?.cancel(); fallbackTimerWorkItem = nil
+        // Also clear delivered rest notifications
+        center.getDeliveredNotifications { delivered in
+            let ids = delivered.filter { $0.request.content.threadIdentifier == self.restNotificationThread }.map { $0.request.identifier }
+            if !ids.isEmpty { self.center.removeDeliveredNotifications(withIdentifiers: ids) }
         }
+    }
+
+    // Public entry point used by UI when a new set is added
+    func startRestTimer(duration: Int, token: SessionToken? = nil) {
+        let duration = max(1, duration)
+        // Ensure this timer is tied to a session token (new or provided)
+        let sessionToken = token ?? beginRestSession()
+        activeSessionToken = sessionToken
         // Respect user preference toggle
         let enabled = UserDefaults.standard.bool(forKey: "notificationsEnabled")
         guard enabled else { return }
@@ -251,10 +285,15 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func startFallbackHapticTimer(duration: Int) {
-        let deadline = DispatchTime.now() + .seconds(duration)
-        DispatchQueue.main.asyncAfter(deadline: deadline) {
-            // If app is active (user just unlocked/opened), skip playing the sound to avoid a late, redundant alert
-            if UIApplication.shared.applicationState != .active {
+        // Cancel any existing fallback
+        fallbackTimerWorkItem?.cancel()
+        let currentToken = activeSessionToken
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            // If session changed or was cancelled, do nothing
+            guard self.activeSessionToken == currentToken else { return }
+            // If app is active (foreground), skip playing the sound to avoid late, redundant alert
+            if !self.isAppActive {
                 if #available(iOS 13.0, *) {
                     let generator = UIImpactFeedbackGenerator(style: .light)
                     generator.prepare()
@@ -263,6 +302,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 AudioServicesPlaySystemSound(1005)
             }
         }
+        fallbackTimerWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(duration), execute: work)
     }
 
     // Foreground presentation: show alert/sound and provide a light haptic buzz
@@ -283,6 +324,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         // Clear tracking so future timers don't try to cancel an old id
         if response.notification.request.content.threadIdentifier == restNotificationThread {
             lastRequestIdentifier = nil
+            activeSessionToken = nil
+            fallbackTimerWorkItem?.cancel(); fallbackTimerWorkItem = nil
         }
         completionHandler()
     }
@@ -450,6 +493,7 @@ struct SettingsView: View {
                                     }
                                 }
                             } else {
+                                NotificationManager.shared.cancelRestSession()
                                 authDescription = "Notifications disabled."
                             }
                         }
@@ -688,12 +732,14 @@ struct ActiveWorkoutView: View {
     private func finishWorkout() {
         try? modelContext.save()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        NotificationManager.shared.cancelRestSession()
         onFinish()
     }
 
     private func deleteExercise(at offsets: IndexSet) {
         session.exercises.remove(atOffsets: offsets)
         try? modelContext.save()
+        NotificationManager.shared.cancelRestSession()
     }
 }
 
@@ -721,6 +767,7 @@ struct ExerciseSectionView: View {
             .onDelete { indices in
                 exercise.sets.remove(atOffsets: indices)
                 try? modelContext.save()
+                NotificationManager.shared.cancelRestSession()
             }
             
             Button("Add Set", systemImage: "plus") {
@@ -728,7 +775,7 @@ struct ExerciseSectionView: View {
                 // Start a rest timer to match in-workout behavior when adding a set here
                 NotificationManager.shared.startRestTimer(duration: restDuration)
             }
-                .tint(ColorTheme.accent)
+                .tint(ColorTheme.primary)
         } header: {
             Text(exercise.name).font(.headline)
         }
@@ -790,7 +837,7 @@ struct AddExerciseView: View {
                         // Start a rest timer to match in-workout behavior when adding a set here
                         NotificationManager.shared.startRestTimer(duration: restDuration)
                     }
-                        .tint(ColorTheme.accent)
+                        .tint(ColorTheme.primary)
                 }
             }
             .navigationTitle("Add Exercise")
@@ -936,7 +983,12 @@ struct EditExerciseView: View {
             .navigationTitle("Edit Exercise")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        NotificationManager.shared.startRestTimer(duration: UserDefaults.standard.integer(forKey: "restDuration"))
+                        dismiss()
+                    }
+                }
             }
         }
     }
@@ -957,7 +1009,8 @@ struct EditNotesView: View {
             .navigationTitle("Edit Notes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }
+                }
             }
         }
     }
@@ -983,7 +1036,12 @@ struct EditSetView: View {
             .navigationTitle("Edit Set")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        NotificationManager.shared.startRestTimer(duration: UserDefaults.standard.integer(forKey: "restDuration"))
+                        dismiss()
+                    }
+                }
             }
         }
     }
