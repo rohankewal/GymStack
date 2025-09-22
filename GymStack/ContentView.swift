@@ -30,13 +30,14 @@ private struct ColorTheme {
     static let success = Color.green
     static let warning = Color.orange
     static let info = Color.blue
+    static let error = Color.red
 
     // Text
     static let primaryText = Color.primary
     static let secondaryText = Color.secondary
 }
 
-private struct ThemedProminentButtonStyle: ButtonStyle {
+private struct ThemedProminentButtonStyle: ButtonStyle { 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
@@ -241,20 +242,20 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         authorizationState { state in
             switch state {
             case .authorized:
+                // Schedule the system notification only; avoid fallback to prevent duplicate/late alerts
                 self.scheduleRestNotification(duration: duration)
-                self.startFallbackHapticTimer(duration: duration)
             case .notDetermined:
                 self.requestAuthorizationIfNeeded { granted in
                     if granted {
+                        // Notifications granted — rely on system notification only
                         self.scheduleRestNotification(duration: duration)
-                        self.startFallbackHapticTimer(duration: duration)
                     } else {
-                        // Still provide local feedback without notifications
+                        // Provide foreground-only local feedback without notifications
                         self.startFallbackHapticTimer(duration: duration)
                     }
                 }
             case .denied:
-                // Do not schedule notifications; provide local feedback only
+                // Do not schedule notifications; provide foreground-only local feedback
                 self.startFallbackHapticTimer(duration: duration)
             }
         }
@@ -284,6 +285,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    // Foreground-only fallback: used when notifications are unavailable. Avoids any background/late sounds.
     private func startFallbackHapticTimer(duration: Int) {
         // Cancel any existing fallback
         fallbackTimerWorkItem?.cancel()
@@ -292,14 +294,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             guard let self = self else { return }
             // If session changed or was cancelled, do nothing
             guard self.activeSessionToken == currentToken else { return }
-            // If app is active (foreground), skip playing the sound to avoid late, redundant alert
-            if !self.isAppActive {
-                if #available(iOS 13.0, *) {
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.prepare()
-                    generator.impactOccurred()
-                }
-                AudioServicesPlaySystemSound(1005)
+            // Only provide local feedback while the app is active. This prevents late playback when waking the device.
+            guard self.isAppActive else { return }
+            if #available(iOS 13.0, *) {
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
             }
         }
         fallbackTimerWorkItem = work
@@ -1053,3 +1052,4 @@ struct EditSetView: View {
         .modelContainer(for: [WorkoutSession.self, LoggedExercise.self, ExerciseSet.self], inMemory: true)
         .tint(ColorTheme.primary)
 }
+
