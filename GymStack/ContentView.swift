@@ -105,12 +105,14 @@ final class ExerciseSet: Identifiable, Equatable {
     @Attribute(.unique) var id: UUID
     var reps: Int
     var weight: Double
+    var createdAt: Date = Date.now
     var exercise: LoggedExercise?
     
-    init(id: UUID = UUID(), reps: Int, weight: Double) {
+    init(id: UUID = UUID(), reps: Int, weight: Double, createdAt: Date = Date()) {
         self.id = id
         self.reps = reps
         self.weight = weight
+        self.createdAt = createdAt
     }
     static func == (lhs: ExerciseSet, rhs: ExerciseSet) -> Bool { lhs.id == rhs.id }
 }
@@ -419,7 +421,7 @@ struct WorkoutHistoryView: View {
             newSession.exercises.append(newExercise)
             
             for exerciseSet in exercise.sets {
-                let newSet = ExerciseSet(reps: exerciseSet.reps, weight: exerciseSet.weight)
+                let newSet = ExerciseSet(reps: exerciseSet.reps, weight: exerciseSet.weight, createdAt: exerciseSet.createdAt)
                 newExercise.sets.append(newSet)
             }
         }
@@ -667,7 +669,11 @@ struct StartWorkoutView: View {
     private func startWorkout() {
         let newSession = WorkoutSession(name: workoutName, date: Date())
         modelContext.insert(newSession)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            print("[StartWorkoutView] Failed to save new session: \(error)")
+        }
         self.newWorkoutSession = newSession
     }
 }
@@ -751,12 +757,11 @@ struct ExerciseSectionView: View {
     
     var body: some View {
         Section {
-            ForEach(exercise.sets.indices, id: \.self) { index in
-                SetRowView(set: exercise.sets[index], setNumber: index + 1, unit: weightUnit.rawValue)
+            ForEach(Array(exercise.sets.sorted(by: { $0.createdAt < $1.createdAt }).enumerated()), id: \.element.id) { index, set in
+                SetRowView(set: set, setNumber: index + 1, unit: weightUnit.rawValue)
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         Button {
-                            // Post a notification to inform ActiveWorkoutView to present the editor for this set
-                            NotificationCenter.default.post(name: .requestEditSetFromActive, object: exercise.sets[index])
+                            NotificationCenter.default.post(name: .requestEditSetFromActive, object: set)
                         } label: {
                             Label("Edit", systemImage: "pencil")
                         }
@@ -764,7 +769,13 @@ struct ExerciseSectionView: View {
                     }
             }
             .onDelete { indices in
-                exercise.sets.remove(atOffsets: indices)
+                let sorted = exercise.sets.sorted(by: { $0.createdAt < $1.createdAt })
+                let toDelete = indices.map { sorted[$0] }
+                for set in toDelete {
+                    if let idx = exercise.sets.firstIndex(of: set) {
+                        exercise.sets.remove(at: idx)
+                    }
+                }
                 try? modelContext.save()
                 NotificationManager.shared.cancelRestSession()
             }
@@ -895,8 +906,8 @@ struct WorkoutDetailView: View {
                                 if !exercise.notes.isEmpty {
                                     Text(exercise.notes).font(.caption).foregroundStyle(.secondary).padding(.bottom, 5)
                                 }
-                                ForEach(exercise.sets) { set in
-                                    SetRowView(set: set, setNumber: (exercise.sets.firstIndex(of: set) ?? 0) + 1, unit: weightUnit.rawValue)
+                                ForEach(Array(exercise.sets.sorted(by: { $0.createdAt < $1.createdAt }).enumerated()), id: \.element.id) { index, set in
+                                    SetRowView(set: set, setNumber: index + 1, unit: weightUnit.rawValue)
                                         .onTapGesture { editingSet = set }
                                 }
                             }
