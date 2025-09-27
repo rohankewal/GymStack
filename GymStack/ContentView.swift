@@ -9,8 +9,6 @@ import SwiftUI
 import SwiftData
 import Combine
 import UserNotifications
-import AudioToolbox
-// NOTE: Ensure Info.plist contains a clear NSUserNotificationUsageDescription explaining rest alerts.
 
 extension Notification.Name {
     static let requestEditSetFromActive = Notification.Name("requestEditSetFromActive")
@@ -124,6 +122,7 @@ enum WeightUnit: String, CaseIterable, Identifiable {
 
 // --- TIMER REPLACEMENT: Notification Manager ---
 // This class handles asking for permission and scheduling the rest timer notifications.
+// Note: The singleton is instantiated at app launch in GymStackApp.init() to ensure the UNUserNotificationCenter delegate is active from launch.
 class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager() // Singleton for easy access
 
