@@ -780,7 +780,7 @@ struct ExerciseSectionView: View {
             }
             
             Button("Add Set", systemImage: "plus") {
-                exercise.sets.append(ExerciseSet(reps: 8, weight: 100.0))
+                exercise.sets.append(ExerciseSet(reps: 0, weight: 0.0))
                 // Start a rest timer to match in-workout behavior when adding a set here
                 NotificationManager.shared.startRestTimer(duration: restDuration)
             }
@@ -798,7 +798,7 @@ struct AddExerciseView: View {
     
     @State private var exerciseName = ""
     @State private var exerciseNotes = ""
-    @State private var sets: [ExerciseSet] = [ExerciseSet(reps: 8, weight: 100.0)]
+    @State private var sets: [ExerciseSet] = [ExerciseSet(reps: 0, weight: 0.0)]
     
     @Query(sort: \LoggedExercise.name) private var allExercises: [LoggedExercise]
     private var uniqueExerciseNames: [String] {
@@ -842,7 +842,7 @@ struct AddExerciseView: View {
                         }
                     }.onDelete { indices in sets.remove(atOffsets: indices) }
                     Button("Add Set", systemImage: "plus") {
-                        sets.append(ExerciseSet(reps: 8, weight: 100.0))
+                        sets.append(ExerciseSet(reps: 0, weight: 0.0))
                         // Start a rest timer to match in-workout behavior when adding a set here
                         NotificationManager.shared.startRestTimer(duration: restDuration)
                     }
