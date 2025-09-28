@@ -314,9 +314,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         generator.prepare()
         generator.impactOccurred()
         if #available(iOS 14.0, *) {
-            completionHandler([.banner, .list])
+            completionHandler([.banner, .list, .sound])
         } else {
-            completionHandler([.alert])
+            completionHandler([.alert, .sound])
         }
     }
     
@@ -354,6 +354,7 @@ struct ContentView: View {
             }
         }
         .tint(ColorTheme.primary)
+        .onAppear { _ = NotificationManager.shared }
     }
 }
 
@@ -1062,4 +1063,3 @@ struct EditSetView: View {
         .modelContainer(for: [WorkoutSession.self, LoggedExercise.self, ExerciseSet.self], inMemory: true)
         .tint(ColorTheme.primary)
 }
-
